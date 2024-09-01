@@ -383,14 +383,14 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		start := time.Now()
-		// fmt.Println("Generators:")
 		gs := sampleNGenerators(p_prime, q_prime, n+2)
-		// fmt.Println(gs)
-		// database manipulation
-
 		// generate a database with 5 entries eliptic curve points
 		database := generateDatabase(n, pieces, curve)
+
+		start := time.Now()
+		// fmt.Println("Generators:")
+		// fmt.Println(gs)
+		// database manipulation
 
 		// // matrix generation
 		matrix := generatePermutationMatrix(n)
