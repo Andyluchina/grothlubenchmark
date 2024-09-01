@@ -361,7 +361,7 @@ func main() {
 	number_of_clients := []int{20, 40, 60, 80, 100}
 	shuffle_times := make([][]int64, 5)
 	proof_times := make([][]int64, 5)
-	times_run := 10
+	times_run := 1000
 	// Generate a permutation matrix of size 5.
 	l_t := 80
 	l_s := 16 // a small security parameter
