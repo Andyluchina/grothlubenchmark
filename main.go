@@ -8,8 +8,12 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/csv"
 	"fmt"
+	"log"
 	"math/big"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -355,6 +359,9 @@ func main() {
 	// security parameters
 
 	number_of_clients := []int{20, 40, 60, 80, 100}
+	shuffle_times := make([][]int64, 5)
+	proof_times := make([][]int64, 5)
+	times_run := 10
 	// Generate a permutation matrix of size 5.
 	l_t := 80
 	l_s := 16 // a small security parameter
@@ -374,265 +381,325 @@ func main() {
 	fmt.Println("security parameter l_s_plus_l_r: ", l_s_plus_l_r)
 	// find generators for q'p'
 
-	for _, n := range number_of_clients {
-
-		fmt.Println("Number of clients: ", n)
-		// Print the generated matrix.
-		privkey, err := curve.GenerateKey(rand.Reader)
-		pubkeyBytes := privkey.PublicKey().Bytes()
-		if err != nil {
-			panic(err)
-		}
-		gs := sampleNGenerators(p_prime, q_prime, n+2)
-		// generate a database with 5 entries eliptic curve points
-		database := generateDatabase(n, pieces, curve)
-
-		start := time.Now()
-		// fmt.Println("Generators:")
-		// fmt.Println(gs)
-		// database manipulation
-
-		// // matrix generation
-		matrix := generatePermutationMatrix(n)
-		inv_matrix, _ := inversePermutationMatrix(matrix)
-
-		// generating ds
-		ds := make([]*big.Int, n)
-		dj := big.NewInt(0)
-		dn := big.NewInt(0)
-		for i := 0; i < n; i++ {
-			if i == n-1 {
-				ds[i] = dn
-			} else {
-				d, _ := generateSecureRandomBits(l_t + 8)
-				ds[i] = setBigIntWithBytes(d)
-				dn = new(big.Int).Add(dn, new(big.Int).Neg(ds[i]))
+	for index, n := range number_of_clients {
+		shuffle_time := make([]int64, times_run)
+		proof_time := make([]int64, times_run)
+		for time_count := 0; time_count < times_run; time_count++ {
+			fmt.Println("Number of clients: ", n)
+			// Print the generated matrix.
+			privkey, err := curve.GenerateKey(rand.Reader)
+			pubkeyBytes := privkey.PublicKey().Bytes()
+			if err != nil {
+				panic(err)
 			}
+			gs := sampleNGenerators(p_prime, q_prime, n+2)
+			// generate a database with 5 entries eliptic curve points
+			database := generateDatabase(n, pieces, curve)
 
-			dj = new(big.Int).Add(dj, new(big.Int).Mul(ds[i], ds[i]))
-		}
+			start := time.Now()
+			// fmt.Println("Generators:")
+			// fmt.Println(gs)
+			// database manipulation
 
-		// generate commitments
-		commitments := make([]*big.Int, n+1)
-		rs := make([]*big.Int, 0)
-		for i := 0; i <= n; i++ {
-			if i == n {
-				new_r, err := generateSecureRandomBits(l_t + l_s_plus_l_r)
-				if err != nil {
-					panic(err)
-				}
-				commitments[i] = generate_commitment(gs, ds, dj, new_r, N)
-				rs = append(rs, setBigIntWithBytes(new_r))
-			} else {
-				new_r, err := generateSecureRandomBits(l_r)
-				if err != nil {
-					panic(err)
-				}
-				backward_index, _ := BackwardMapping(i, matrix)
-				d_needed := ds[backward_index]
-				d_needed = new(big.Int).Mul(d_needed, big.NewInt(2))
-				commitments[i] = generate_commitment(gs, IntToBigInt(inv_matrix[i]), d_needed, new_r, N) // Fix: Add N as the last argument
-				rs = append(rs, setBigIntWithBytes(new_r))                                               // Fix: Assign the result of append to rs
-			}
-		}
+			// // matrix generation
+			matrix := generatePermutationMatrix(n)
+			inv_matrix, _ := inversePermutationMatrix(matrix)
 
-		// R_R
-		R_R, err := generateSecureRandomBits(256)
-		if err != nil {
-			panic(err)
-		}
-		// fmt.Println(R_R)
-		// printMatrix(matrix)
-		// negate R_R
-
-		// fmt.Println(database)
-
-		// generating set of randomizers
-		randomizers := generateRandomizers(n, curve)
-
-		// randomize the entry with the randomizers, permuatation first, randomziation second
-		permutedDatabase, _ := permuteByteSlicesWithMatrix(matrix, database)
-
-		permutedRandomizedDatabase, _ := randomizeEncryptEntriesWithRandomizers(permutedDatabase, randomizers, pubkeyBytes)
-
-		// randomize the entry with the randomizers, randomziation first, permuatation second
-		// randomizedDatabase, _ := randomizeEncryptEntriesWithRandomizers(database, randomizers, pubkeyBytes)
-
-		// permutedRandomizedDatabase, _ := permuteByteSlicesWithMatrix(matrix, randomizedDatabase)
-		// fmt.Println("Original array of byte slices:")
-		// for _, slice := range database {
-		// 	fmt.Println(slice)
-		// }
-
-		// fmt.Println("Randomized and permuted array of byte slices:")
-		// for _, slice := range permutedRandomizedDatabase {
-		// 	fmt.Println(slice)
-		// }
-
-		// // generate Er
-		// in the case where there are 9 pieces, we need to generate 9 Ers
-		E_R_pos, err := elgamal.ECDH_bytes(pubkeyBytes, R_R) /// encrypting the zero element
-		if err != nil {
-			panic(err)
-		}
-		E_R, err := elgamal.ReturnNegative(E_R_pos)
-		if err != nil {
-			panic(err)
-		}
-
-		E_Rs := make([][]byte, pieces)
-
-		for piece := 0; piece < pieces; piece++ {
-			E_Rs[piece] = make([]byte, len(E_R))
-			copy(E_Rs[piece], E_R)
+			// generating ds
+			ds := make([]*big.Int, n)
+			dj := big.NewInt(0)
+			dn := big.NewInt(0)
 			for i := 0; i < n; i++ {
-				E_i_d_i, err := elgamal.ECDH_bytes(permutedRandomizedDatabase[i][piece], elgamal.PadTo32Bytes(ds[i].Bytes()))
-				if err != nil {
-					panic(err)
+				if i == n-1 {
+					ds[i] = dn
+				} else {
+					d, _ := generateSecureRandomBits(l_t + 8)
+					ds[i] = setBigIntWithBytes(d)
+					dn = new(big.Int).Add(dn, new(big.Int).Neg(ds[i]))
 				}
-				if ds[i].Cmp(big.NewInt(0)) < 0 {
-					// fmt.Println("detected negative ds[i]")
-					E_i_d_i, err = elgamal.ReturnNegative(E_i_d_i)
+
+				dj = new(big.Int).Add(dj, new(big.Int).Mul(ds[i], ds[i]))
+			}
+
+			// generate commitments
+			commitments := make([]*big.Int, n+1)
+			rs := make([]*big.Int, 0)
+			for i := 0; i <= n; i++ {
+				if i == n {
+					new_r, err := generateSecureRandomBits(l_t + l_s_plus_l_r)
+					if err != nil {
+						panic(err)
+					}
+					commitments[i] = generate_commitment(gs, ds, dj, new_r, N)
+					rs = append(rs, setBigIntWithBytes(new_r))
+				} else {
+					new_r, err := generateSecureRandomBits(l_r)
+					if err != nil {
+						panic(err)
+					}
+					backward_index, _ := BackwardMapping(i, matrix)
+					d_needed := ds[backward_index]
+					d_needed = new(big.Int).Mul(d_needed, big.NewInt(2))
+					commitments[i] = generate_commitment(gs, IntToBigInt(inv_matrix[i]), d_needed, new_r, N) // Fix: Add N as the last argument
+					rs = append(rs, setBigIntWithBytes(new_r))                                               // Fix: Assign the result of append to rs
+				}
+			}
+
+			// R_R
+			R_R, err := generateSecureRandomBits(256)
+			if err != nil {
+				panic(err)
+			}
+			// fmt.Println(R_R)
+			// printMatrix(matrix)
+			// negate R_R
+
+			// fmt.Println(database)
+
+			// generating set of randomizers
+			randomizers := generateRandomizers(n, curve)
+
+			// randomize the entry with the randomizers, permuatation first, randomziation second
+			permutedDatabase, _ := permuteByteSlicesWithMatrix(matrix, database)
+
+			permutedRandomizedDatabase, _ := randomizeEncryptEntriesWithRandomizers(permutedDatabase, randomizers, pubkeyBytes)
+
+			// randomize the entry with the randomizers, randomziation first, permuatation second
+			// randomizedDatabase, _ := randomizeEncryptEntriesWithRandomizers(database, randomizers, pubkeyBytes)
+
+			// permutedRandomizedDatabase, _ := permuteByteSlicesWithMatrix(matrix, randomizedDatabase)
+			// fmt.Println("Original array of byte slices:")
+			// for _, slice := range database {
+			// 	fmt.Println(slice)
+			// }
+
+			// fmt.Println("Randomized and permuted array of byte slices:")
+			// for _, slice := range permutedRandomizedDatabase {
+			// 	fmt.Println(slice)
+			// }
+
+			// // generate Er
+			// in the case where there are 9 pieces, we need to generate 9 Ers
+			E_R_pos, err := elgamal.ECDH_bytes(pubkeyBytes, R_R) /// encrypting the zero element
+			if err != nil {
+				panic(err)
+			}
+			E_R, err := elgamal.ReturnNegative(E_R_pos)
+			if err != nil {
+				panic(err)
+			}
+
+			E_Rs := make([][]byte, pieces)
+
+			for piece := 0; piece < pieces; piece++ {
+				E_Rs[piece] = make([]byte, len(E_R))
+				copy(E_Rs[piece], E_R)
+				for i := 0; i < n; i++ {
+					E_i_d_i, err := elgamal.ECDH_bytes(permutedRandomizedDatabase[i][piece], elgamal.PadTo32Bytes(ds[i].Bytes()))
+					if err != nil {
+						panic(err)
+					}
+					if ds[i].Cmp(big.NewInt(0)) < 0 {
+						// fmt.Println("detected negative ds[i]")
+						E_i_d_i, err = elgamal.ReturnNegative(E_i_d_i)
+						if err != nil {
+							panic(err)
+						}
+					}
+					// fmt.Println("ER", E_Rs[piece])
+					E_Rs[piece], err = elgamal.Encrypt(E_Rs[piece], E_i_d_i)
 					if err != nil {
 						panic(err)
 					}
 				}
-				// fmt.Println("ER", E_Rs[piece])
-				E_Rs[piece], err = elgamal.Encrypt(E_Rs[piece], E_i_d_i)
-				if err != nil {
-					panic(err)
-				}
+
 			}
 
-		}
+			/// generate challenges ts
 
-		/// generate challenges ts
+			ts := NoninteractiveChallengeGeneration(ds, dj, dn, commitments, database, permutedRandomizedDatabase, R_R, E_Rs, pubkeyBytes, n)
 
-		ts := NoninteractiveChallengeGeneration(ds, dj, dn, commitments, database, permutedRandomizedDatabase, R_R, E_Rs, pubkeyBytes, n)
-
-		// generate answers
-		fs := make([]*big.Int, n)
-		for i := 0; i < n; i++ {
-			t_pi_j, _ := ForwardMapping(i, matrix)
-			fs[i] = new(big.Int).Add(setBigIntWithBytes(ts[t_pi_j]), ds[i])
-		}
-
-		small_z := big.NewInt(0)
-		for i := 0; i < n; i++ {
-			small_z = new(big.Int).Add(small_z, new(big.Int).Mul(setBigIntWithBytes(ts[i]), rs[i]))
-		}
-		small_z = new(big.Int).Add(small_z, rs[n])
-
-		// generate big Z Big_Z
-		Big_Z := new(big.Int).Set(setBigIntWithBytes(R_R))
-		for i := 0; i < n; i++ {
-			t_pi_i, _ := ForwardMapping(i, matrix)
-			Big_Z = new(big.Int).Add(Big_Z, new(big.Int).Mul(setBigIntWithBytes(randomizers[i]), setBigIntWithBytes(ts[t_pi_i])))
-		}
-
-		elapsed := time.Since(start)
-		fmt.Println("Time elapsed for shuffle: ", elapsed.Milliseconds())
-		////// verification
-
-		proof_start := time.Now()
-		/// first check
-		/// sum up fs and check if it is equal to sum of ts
-		sum := big.NewInt(0)
-		for _, f := range fs {
-			sum.Add(sum, f)
-		}
-		sum_ts := big.NewInt(0)
-		for _, t := range ts {
-			sum_ts.Add(sum_ts, setBigIntWithBytes(t))
-		}
-		// fmt.Println("Sum of fs:", sum)
-		// fmt.Println("Sum of ts:", sum_ts)
-		if sum.Cmp(sum_ts) == 0 {
-			// fmt.Println("First Test PASSED!!!!!!!!!Sum of fs is equal to sum of ts")
-		} else {
-			fmt.Println("Sum of fs is not equal to sum of ts")
-		}
-
-		// calculate f_delta
-		f_delta := big.NewInt(0)
-		// sum of f squared
-		for _, f := range fs {
-			f_delta.Add(f_delta, new(big.Int).Mul(f, f))
-		}
-		// minus sum of ts squared
-		for _, t := range ts {
-			f_delta.Sub(f_delta, new(big.Int).Mul(setBigIntWithBytes(t), setBigIntWithBytes(t)))
-		}
-
-		/// conducting second check
-		second_condition_right_hand_side := generate_commitment(gs, fs, f_delta, small_z.Bytes(), N)
-
-		second_condition_left_hand_side := new(big.Int).Set(commitments[n])
-		for i := 0; i < n; i++ {
-			second_condition_left_hand_side = new(big.Int).Mul(second_condition_left_hand_side, new(big.Int).Exp(commitments[i], setBigIntWithBytes(ts[i]), N))
-		}
-		second_condition_left_hand_side = new(big.Int).Mod(second_condition_left_hand_side, N)
-
-		// compare the two sides
-		if second_condition_left_hand_side.Cmp(second_condition_right_hand_side) == 0 {
-			// fmt.Println("Second Test PASSED!!!!!!!!!")
-		} else {
-			fmt.Println("they are not equal! Failed???????")
-		}
-
-		/// conducting third check
-		for piece := 0; piece < pieces; piece++ {
-			third_condition_left_hand_side := elgamal.ReturnInfinityPoint()
-			if err != nil {
-				panic(err)
-			}
+			// generate answers
+			fs := make([]*big.Int, n)
 			for i := 0; i < n; i++ {
-				E_i_f_i, err := elgamal.ECDH_bytes(permutedRandomizedDatabase[i][piece], elgamal.PadTo32Bytes(fs[i].Bytes()))
+				t_pi_j, _ := ForwardMapping(i, matrix)
+				fs[i] = new(big.Int).Add(setBigIntWithBytes(ts[t_pi_j]), ds[i])
+			}
+
+			small_z := big.NewInt(0)
+			for i := 0; i < n; i++ {
+				small_z = new(big.Int).Add(small_z, new(big.Int).Mul(setBigIntWithBytes(ts[i]), rs[i]))
+			}
+			small_z = new(big.Int).Add(small_z, rs[n])
+
+			// generate big Z Big_Z
+			Big_Z := new(big.Int).Set(setBigIntWithBytes(R_R))
+			for i := 0; i < n; i++ {
+				t_pi_i, _ := ForwardMapping(i, matrix)
+				Big_Z = new(big.Int).Add(Big_Z, new(big.Int).Mul(setBigIntWithBytes(randomizers[i]), setBigIntWithBytes(ts[t_pi_i])))
+			}
+
+			elapsed := time.Since(start)
+			shuffle_time[time_count] = elapsed.Milliseconds()
+			fmt.Println("Time elapsed for shuffle: ", shuffle_time[time_count])
+			////// verification
+
+			proof_start := time.Now()
+			/// first check
+			/// sum up fs and check if it is equal to sum of ts
+			sum := big.NewInt(0)
+			for _, f := range fs {
+				sum.Add(sum, f)
+			}
+			sum_ts := big.NewInt(0)
+			for _, t := range ts {
+				sum_ts.Add(sum_ts, setBigIntWithBytes(t))
+			}
+			// fmt.Println("Sum of fs:", sum)
+			// fmt.Println("Sum of ts:", sum_ts)
+			if sum.Cmp(sum_ts) == 0 {
+				// fmt.Println("First Test PASSED!!!!!!!!!Sum of fs is equal to sum of ts")
+			} else {
+				fmt.Println("Sum of fs is not equal to sum of ts")
+			}
+
+			// calculate f_delta
+			f_delta := big.NewInt(0)
+			// sum of f squared
+			for _, f := range fs {
+				f_delta.Add(f_delta, new(big.Int).Mul(f, f))
+			}
+			// minus sum of ts squared
+			for _, t := range ts {
+				f_delta.Sub(f_delta, new(big.Int).Mul(setBigIntWithBytes(t), setBigIntWithBytes(t)))
+			}
+
+			/// conducting second check
+			second_condition_right_hand_side := generate_commitment(gs, fs, f_delta, small_z.Bytes(), N)
+
+			second_condition_left_hand_side := new(big.Int).Set(commitments[n])
+			for i := 0; i < n; i++ {
+				second_condition_left_hand_side = new(big.Int).Mul(second_condition_left_hand_side, new(big.Int).Exp(commitments[i], setBigIntWithBytes(ts[i]), N))
+			}
+			second_condition_left_hand_side = new(big.Int).Mod(second_condition_left_hand_side, N)
+
+			// compare the two sides
+			if second_condition_left_hand_side.Cmp(second_condition_right_hand_side) == 0 {
+				// fmt.Println("Second Test PASSED!!!!!!!!!")
+			} else {
+				fmt.Println("they are not equal! Failed???????")
+			}
+
+			/// conducting third check
+			for piece := 0; piece < pieces; piece++ {
+				third_condition_left_hand_side := elgamal.ReturnInfinityPoint()
 				if err != nil {
 					panic(err)
 				}
-				// check if fs[i] is negative
-				if fs[i].Cmp(big.NewInt(0)) < 0 {
-					fmt.Println("detected negative fs[i]")
-					E_i_f_i, err = elgamal.ReturnNegative(E_i_f_i)
+				for i := 0; i < n; i++ {
+					E_i_f_i, err := elgamal.ECDH_bytes(permutedRandomizedDatabase[i][piece], elgamal.PadTo32Bytes(fs[i].Bytes()))
+					if err != nil {
+						panic(err)
+					}
+					// check if fs[i] is negative
+					if fs[i].Cmp(big.NewInt(0)) < 0 {
+						fmt.Println("detected negative fs[i]")
+						E_i_f_i, err = elgamal.ReturnNegative(E_i_f_i)
+						if err != nil {
+							panic(err)
+						}
+					}
+					third_condition_left_hand_side, err = elgamal.Encrypt(third_condition_left_hand_side, E_i_f_i)
 					if err != nil {
 						panic(err)
 					}
 				}
-				third_condition_left_hand_side, err = elgamal.Encrypt(third_condition_left_hand_side, E_i_f_i)
-				if err != nil {
-					panic(err)
-				}
-			}
 
-			third_condition_right_hand_side, err := elgamal.ECDH_bytes(pubkeyBytes, elgamal.PadTo32Bytes(Big_Z.Bytes()))
-			if err != nil {
-				panic(err)
-			}
-			third_condition_right_hand_side, err = elgamal.Encrypt(third_condition_right_hand_side, E_Rs[piece])
-			if err != nil {
-				panic(err)
-			}
-			for i := 0; i < n; i++ {
-				e_i_t_i, err := elgamal.ECDH_bytes(database[i][piece], ts[i])
+				third_condition_right_hand_side, err := elgamal.ECDH_bytes(pubkeyBytes, elgamal.PadTo32Bytes(Big_Z.Bytes()))
 				if err != nil {
 					panic(err)
 				}
-				third_condition_right_hand_side, err = elgamal.Encrypt(third_condition_right_hand_side, e_i_t_i)
+				third_condition_right_hand_side, err = elgamal.Encrypt(third_condition_right_hand_side, E_Rs[piece])
 				if err != nil {
 					panic(err)
 				}
-			}
+				for i := 0; i < n; i++ {
+					e_i_t_i, err := elgamal.ECDH_bytes(database[i][piece], ts[i])
+					if err != nil {
+						panic(err)
+					}
+					third_condition_right_hand_side, err = elgamal.Encrypt(third_condition_right_hand_side, e_i_t_i)
+					if err != nil {
+						panic(err)
+					}
+				}
 
-			if bytes.Equal(third_condition_left_hand_side, third_condition_right_hand_side) {
-				// fmt.Println("Third Test PASSED!!!!!!!!!")
-			} else {
-				fmt.Println("Third Test not equal! Failed???????")
+				if bytes.Equal(third_condition_left_hand_side, third_condition_right_hand_side) {
+					// fmt.Println("Third Test PASSED!!!!!!!!!")
+				} else {
+					fmt.Println("Third Test not equal! Failed???????")
+				}
 			}
+			proof_end := time.Since(proof_start)
+			proof_time[time_count] = proof_end.Milliseconds()
+			fmt.Println("Time elapsed for proof: ", proof_time[time_count])
+			fmt.Println("\n")
 		}
-		proof_end := time.Since(proof_start)
-		fmt.Println("Time elapsed for proof: ", proof_end.Milliseconds())
-		fmt.Println("\n")
+
+		shuffle_times[index] = shuffle_time
+		proof_times[index] = proof_time
 	}
+
+	fmt.Println("Shuffle times", shuffle_times)
+	fmt.Println("Proof times", proof_times)
+	// Create a new CSV file
+	file, err := os.Create("shuffle.csv")
+	if err != nil {
+		log.Fatalf("Failed to create file: %s", err)
+	}
+	defer file.Close()
+
+	// Create a new CSV writer
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	// Convert each row of integers to strings and write to the CSV file
+	for _, row := range shuffle_times {
+		stringRow := make([]string, len(row))
+		for i, value := range row {
+			stringRow[i] = strconv.Itoa(int(value)) // Convert integer to string
+		}
+		err := writer.Write(stringRow)
+		if err != nil {
+			log.Fatalf("Failed to write row to csv: %s", err)
+		}
+	}
+
+	log.Println("Data successfully written to shuffle.csv")
+
+	// Create a new CSV file
+	file, err = os.Create("proof.csv")
+	if err != nil {
+		log.Fatalf("Failed to create file: %s", err)
+	}
+	defer file.Close()
+
+	// Create a new CSV writer
+	writer = csv.NewWriter(file)
+	defer writer.Flush()
+
+	// Convert each row of integers to strings and write to the CSV file
+	for _, row := range proof_times {
+		stringRow := make([]string, len(row))
+		for i, value := range row {
+			stringRow[i] = strconv.Itoa(int(value)) // Convert integer to string
+		}
+		err := writer.Write(stringRow)
+		if err != nil {
+			log.Fatalf("Failed to write row to csv: %s", err)
+		}
+	}
+
+	log.Println("Data successfully written to shuffle.csv")
 
 }
